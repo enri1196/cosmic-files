@@ -1942,9 +1942,18 @@ impl ItemThumbnail {
                 false
             }
         };
+        let thumbnail_cacher = thumbnail_cacher.ok();
 
-        let mut tried_supported_file = false;
-        // First try built-in image thumbnailer
+        // Try external thumbnailers first like Glycin.
+        if let Some(item_thumbnail) =
+            Self::run_external_thumbnailer(path, &mime, thumbnail_size, thumbnail_cacher.as_ref())
+        {
+            return item_thumbnail;
+        }
+        // A registered external thumbnailer counts as "tried" even if it failed.
+        let mut tried_supported_file = !thumbnailer(&mime).is_empty();
+
+        // Fallback: built-in image thumbnailer (decodes in-process).
         if mime.type_() == mime::IMAGE && check_size("image", max_size_mb * 1000 * 1000) {
             // Check if image dimensions would exceed available memory budget
             // The GPU tiling system can handle large images, but we still need to decode them first
@@ -2011,7 +2020,7 @@ impl ItemThumbnail {
             if let Some(dyn_img) = dyn_img {
                 let (img_width, img_height) = (dyn_img.width(), dyn_img.height());
 
-                if let Ok(cacher) = thumbnail_cacher.as_ref() {
+                if let Some(cacher) = thumbnail_cacher.as_ref() {
                     match cacher.update_with_image(dyn_img) {
                         Ok(thumb_path) => {
                             return Self::Image(
@@ -2039,24 +2048,6 @@ impl ItemThumbnail {
                 }
             }
         }
-
-        // Try external thumbnailers.
-        let thumbnail_dir = thumbnail_cacher
-            .as_ref()
-            .ok()
-            .map(ThumbnailCacher::thumbnail_dir);
-        if let Some((item_thumbnail, temp_file)) =
-            Self::generate_thumbnail_external(path, &mime, thumbnail_size, thumbnail_dir)
-        {
-            if let Ok(cache) = thumbnail_cacher
-                && let Err(err) = cache.update_with_temp_file(temp_file)
-            {
-                log::warn!("failed to update cache for {}: {}", path.display(), err);
-            }
-            return item_thumbnail;
-        }
-
-        tried_supported_file = tried_supported_file || !thumbnailer(&mime).is_empty();
 
         // Try internal thumbnailers that don't get cached.
         //TODO: adjust limits for internal thumbnailers as desired
@@ -2111,7 +2102,7 @@ impl ItemThumbnail {
         // If we weren't able to create a thumbnail, but we should have
         // been able to, create a fail marker so that it isn't tried the
         // next time.
-        if let Ok(cacher) = thumbnail_cacher
+        if let Some(cacher) = thumbnail_cacher
             && tried_supported_file
             && let Err(err) = cacher.create_fail_marker()
         {
@@ -2123,6 +2114,25 @@ impl ItemThumbnail {
         }
 
         Self::NotImage
+    }
+
+    /// Generate a thumbnail using an external (sandboxed) thumbnailer and
+    /// try to store the result in cache.
+    fn run_external_thumbnailer(
+        path: &Path,
+        mime: &mime::Mime,
+        thumbnail_size: u32,
+        thumbnail_cacher: Option<&ThumbnailCacher>,
+    ) -> Option<Self> {
+        let thumbnail_dir = thumbnail_cacher.map(ThumbnailCacher::thumbnail_dir);
+        let (item_thumbnail, temp_file) =
+            Self::generate_thumbnail_external(path, mime, thumbnail_size, thumbnail_dir)?;
+        if let Some(cache) = thumbnail_cacher
+            && let Err(err) = cache.update_with_temp_file(temp_file)
+        {
+            log::warn!("failed to update cache for {}: {}", path.display(), err);
+        }
+        Some(item_thumbnail)
     }
 
     fn generate_thumbnail_external(

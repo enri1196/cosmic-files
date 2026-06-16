@@ -289,7 +289,7 @@ impl ThumbnailCacher {
     }
 }
 
-fn thumbnail_uri(path: &Path) -> io::Result<String> {
+pub(crate) fn thumbnail_uri(path: &Path) -> io::Result<String> {
     let absolute_path = fs::canonicalize(path)?;
     let url = Url::from_file_path(&absolute_path).map_err(|()| {
         io::Error::other(format!(

@@ -10,6 +10,8 @@ use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
 use std::{fs, process};
 
+use crate::thumbnail_cacher::thumbnail_uri;
+
 #[derive(Clone, Debug)]
 pub struct Thumbnailer {
     pub exec: String,
@@ -28,8 +30,24 @@ impl Thumbnailer {
         for arg in args {
             if arg.starts_with('%') {
                 match arg.as_str() {
-                    "%i" | "%u" => {
+                    "%i" => {
                         command.arg(input);
+                    }
+                    "%u" => {
+                        // %u is the input URI. Thumbnailers such as glycin call
+                        // `gio::File::for_uri` on it, so a bare path won't work.
+                        match thumbnail_uri(input) {
+                            Ok(uri) => {
+                                command.arg(uri);
+                            }
+                            Err(err) => {
+                                log::warn!(
+                                    "failed to build URI for thumbnailer input {:?}, passing path: {}",
+                                    input, err
+                                );
+                                command.arg(input);
+                            }
+                        }
                     }
                     "%o" => {
                         command.arg(output);
